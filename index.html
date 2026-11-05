@@ -112,7 +112,8 @@ const $ = id => document.getElementById(id);
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 let idx = 0, running = false, rec = null, buf = '', listening = false;
 let photoData = '';   // base64（縮小済みJPEG）
-let qrImage = '', qrText = '';   // QRの切り抜き（base64）と読み取り内容
+let qrImage = '', qrText = '';
+let smallData = '';  // 白抜き用の小さい写真（約500px）   // QRの切り抜き（base64）と読み取り内容
 let saving = false;
 const pending = new Set();   // 「まだ」と言った項目（スプシで色付け）
 
@@ -147,7 +148,7 @@ function mark(){ ITEMS.forEach((_,i)=>$('r'+i).classList.toggle('now', running &
 function setVal(f,v){ $('v_'+f).value = v; unmarkPending(f); }
 function markPending(f){ $('v_'+f).value = ''; pending.add(f); $('v_'+f).classList.add('pending'); $('v_'+f).placeholder = 'まだ'; }
 function unmarkPending(f){ pending.delete(f); $('v_'+f).classList.remove('pending'); $('v_'+f).placeholder = ''; }
-function clearAll(){ ITEMS.forEach(it=>setVal(it.f,'')); photoData=''; $('photoPrev').style.display='none';
+function clearAll(){ ITEMS.forEach(it=>setVal(it.f,'')); photoData=''; smallData=''; $('photoPrev').style.display='none';
   qrImage=''; qrText=''; $('qrPrev').style.display='none'; $('qrInfo').textContent='';
   $('result').style.display='none'; $('q').textContent=''; $('heard').textContent=''; }
 
@@ -163,6 +164,12 @@ $('photo').onchange = async () => {
     c.getContext('2d').drawImage(img,0,0,c.width,c.height);
     const url = c.toDataURL('image/jpeg', 0.8);
     photoData = url.split(',')[1];
+    // 白抜き用の小さい版（Claudeでの白抜き処理を軽くするため）
+    const s2 = Math.min(1, 500 / Math.max(img.width, img.height));
+    const c2 = document.createElement('canvas');
+    c2.width = Math.round(img.width*s2); c2.height = Math.round(img.height*s2);
+    c2.getContext('2d').drawImage(img,0,0,c2.width,c2.height);
+    smallData = c2.toDataURL('image/jpeg', 0.85).split(',')[1];
     $('photoPrev').src = url; $('photoPrev').style.display='block';
     findQR(img);
     URL.revokeObjectURL(img.src);
@@ -307,7 +314,7 @@ async function save(){
   for(const it of ITEMS){ if(!it.text && !it.code && data[it.f] && isNaN(Number(data[it.f]))){ status(it.k+'は数字で入れてください'); return; } }
   saving = true; $('save').disabled = true; $('save').textContent = '保存中…';
   try{
-    const j = await post(Object.assign({action:'add', key:getSet('key'), user:getSet('user'), image:photoData, qrImage:qrImage, qrText:qrText,
+    const j = await post(Object.assign({action:'add', key:getSet('key'), user:getSet('user'), image:photoData, small:smallData, qrImage:qrImage, qrText:qrText,
       pending:[...pending].filter(f=>!$('v_'+f).value)}, data));
     if(!j.ok) throw new Error(j.error || '保存できませんでした');
     showResult(j);
