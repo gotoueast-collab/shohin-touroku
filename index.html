@@ -22,6 +22,7 @@
   table{width:100%;border-collapse:collapse}
   td{border-bottom:1px solid var(--line);padding:6px 4px;font-size:16px}
   td:first-child{width:45%}
+  td input.pending{background:#ffe599}
   td input{width:100%;font-size:17px;padding:6px;border:1px solid var(--line);border-radius:6px}
   tr.now td{background:#fff3c4}
   .unit{font-size:13px;color:#666;padding-left:4px;white-space:nowrap}
@@ -62,6 +63,7 @@
     <button id="start">🎤 音声入力スタート</button>
     <button class="sub" id="back">戻る</button>
     <button class="sub" id="skip">飛ばす</button>
+    <button class="sub" id="later">まだ</button>
     <button class="sub" id="stop">止める</button>
     <div id="q"></div>
     <div id="heard"></div>
@@ -79,7 +81,8 @@
 
   <div class="help">
     ・質問に「12センチです」のように答える（「です」で確定）<br>
-    ・「飛ばす」「なし」「まだ」→ 空欄で次へ／「戻って」→ 1つ前へ<br>
+    ・「なし」「飛ばす」→ 空欄で次へ／「まだ」→ 空欄＋スプシで色付け（後で入力する印）<br>
+    ・「戻って」→ 1つ前へ<br>
     ・最後に「保存しますか？」→「はい」で保存<br>
     <a href="#" id="reset">登録者名・合言葉を変更</a>
   </div>
@@ -90,6 +93,7 @@
 const GAS_URL = 'https://script.google.com/macros/s/AKfycbxTwMJt4CLp7HgmxvBYPsUY_oy-PaGWT0v-r_6S6kkbt5MQwPcrPTNm8EwfN8QFWkSK/exec';
 
 const ITEMS = [
+  {f:'supplier',  k:'仕入先コード',  q:'仕入先コードは？', code:true},
   {f:'name',      k:'商品名',        q:'商品名は？', text:true},
   {f:'color',     k:'色',            q:'色は？', text:true},
   {f:'tate',      k:'縦・高さ',      q:'高さは？', u:'cm'},
@@ -106,6 +110,7 @@ const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 let idx = 0, running = false, rec = null, buf = '', listening = false;
 let photoData = '';   // base64（縮小済みJPEG）
 let saving = false;
+const pending = new Set();   // 「まだ」と言った項目（スプシで色付け）
 
 /* ---------- 設定（端末ごとに保存） ---------- */
 function getSet(k){ try{ return localStorage.getItem(k) || ''; }catch(e){ return ''; } }
@@ -127,14 +132,17 @@ $('setSave').onclick = async () => {
 $('reset').onclick = e => { e.preventDefault(); showSetup(); };
 
 /* ---------- 入力表 ---------- */
+function bindInputs(){ ITEMS.forEach(it=>$('v_'+it.f).addEventListener('input',()=>{ if($('v_'+it.f).value) unmarkPending(it.f); })); }
 function buildTable(){
   $('tbl').innerHTML = ITEMS.map((it,i)=>
     `<tr id="r${i}"><td>${it.k}</td><td style="display:flex;align-items:center">
-      <input id="v_${it.f}" ${it.text?'':'inputmode="decimal"'}>
+      <input id="v_${it.f}" ${it.text||it.code?'':'inputmode="decimal"'}>
       ${it.u?`<span class="unit">${it.u}</span>`:''}</td></tr>`).join('');
 }
 function mark(){ ITEMS.forEach((_,i)=>$('r'+i).classList.toggle('now', running && i===idx)); }
-function setVal(f,v){ $('v_'+f).value = v; }
+function setVal(f,v){ $('v_'+f).value = v; unmarkPending(f); }
+function markPending(f){ $('v_'+f).value = ''; pending.add(f); $('v_'+f).classList.add('pending'); $('v_'+f).placeholder = 'まだ'; }
+function unmarkPending(f){ pending.delete(f); $('v_'+f).classList.remove('pending'); $('v_'+f).placeholder = ''; }
 function clearAll(){ ITEMS.forEach(it=>setVal(it.f,'')); photoData=''; $('photoPrev').style.display='none';
   $('result').style.display='none'; $('q').textContent=''; $('heard').textContent=''; }
 
@@ -196,19 +204,25 @@ function stopListen(){ listening = false; try{ rec.stop(); }catch(e){} }
 function stopAll(){ running = false; stopListen(); mark(); $('q').textContent=''; status(''); }
 
 function handle(text){
-  const t = kanjiToNum(text.normalize('NFKC')).replace(/[\s。、.]/g,'');
+  // 句点・空白だけ除く（小数点の「.」は残す：2.1 が 21 にならないように）
+  const t = text.normalize('NFKC').replace(/[\s。、]/g,'').replace(/\.(?!\d)/g,'');
   if(/戻って|もどって/.test(t)){ idx = Math.max(0, idx-1); ask(); return true; }
   if(idx === CONFIRM){
     if(/はい|保存|ほぞん|お願い/.test(t)){ stopAll(); save(); return true; }
     if(/いいえ|まだ|やめ|しない/.test(t)){ stopAll(); status('確認して「保存する」を押してください'); return true; }
     return false;
   }
-  if(/^(飛ばす|飛ばして|とばす|とばして|スキップ|なし|無し|まだ)(です)?$/.test(t)){ setVal(ITEMS[idx].f,''); idx++; ask(); return true; }
+  if(/^(まだ)(です)?$/.test(t)){ markPending(ITEMS[idx].f); idx++; ask(); return true; }
+  if(/^(飛ばす|飛ばして|とばす|とばして|スキップ|なし|無し)(です)?$/.test(t)){ setVal(ITEMS[idx].f,''); idx++; ask(); return true; }
   if(!/です$/.test(t)) return false;
   const body = t.replace(/です$/,''); const it = ITEMS[idx];
-  if(it.text){ setVal(it.f, body.replace(/^(は|が)/,'')); }
-  else {
-    const m = body.match(/\d+(\.\d+)?/);
+  if(it.text){
+    setVal(it.f, body.replace(/^(は|が)/,''));           // 商品名・色は漢数字もそのまま
+  } else if(it.code){
+    setVal(it.f, kanjiToNum(body.replace(/^(は|が)/,'')).replace(/(\d)点(\d)/g,'$1.$2').toUpperCase());
+  } else {
+    const n = kanjiToNum(body).replace(/(\d)点(\d)/g,'$1.$2'); // 「2点1」→2.1
+    const m = n.match(/\d+(\.\d+)?/);
     if(!m){ status('数字が聞き取れませんでした。もう一度どうぞ'); buf=''; return true; }
     setVal(it.f, m[0]); // 単位は付けず数字だけ
   }
@@ -232,12 +246,13 @@ $('start').onclick = () => {
   if(!SR){ status('この端末・ブラウザは音声認識に対応していません（Chrome／Safariで開いてください）'); return; }
   if(!rec) setupRec();
   // 空欄の最初の項目から始める
-  idx = ITEMS.findIndex(it => !$('v_'+it.f).value); if(idx < 0) idx = CONFIRM;
+  idx = ITEMS.findIndex(it => !$('v_'+it.f).value && !pending.has(it.f)); if(idx < 0) idx = CONFIRM;
   running = true; ask();
 };
 $('back').onclick = () => { if(running){ idx=Math.max(0,idx-1); ask(); } };
 $('skip').onclick = () => { if(running && idx < CONFIRM){ setVal(ITEMS[idx].f,''); idx++; ask(); } };
 $('stop').onclick = stopAll;
+$('later').onclick = () => { if(running && idx < CONFIRM){ markPending(ITEMS[idx].f); idx++; ask(); } };
 
 /* ---------- 保存 ---------- */
 async function post(obj){
@@ -249,10 +264,11 @@ async function save(){
   if(saving) return;
   const data = {}; ITEMS.forEach(it => data[it.f] = $('v_'+it.f).value.trim());
   if(!data.name && !photoData){ status('商品名か写真のどちらかは入れてください'); return; }
-  for(const it of ITEMS){ if(!it.text && data[it.f] && isNaN(Number(data[it.f]))){ status(it.k+'は数字で入れてください'); return; } }
+  for(const it of ITEMS){ if(!it.text && !it.code && data[it.f] && isNaN(Number(data[it.f]))){ status(it.k+'は数字で入れてください'); return; } }
   saving = true; $('save').disabled = true; $('save').textContent = '保存中…';
   try{
-    const j = await post(Object.assign({action:'add', key:getSet('key'), user:getSet('user'), image:photoData}, data));
+    const j = await post(Object.assign({action:'add', key:getSet('key'), user:getSet('user'), image:photoData,
+      pending:[...pending].filter(f=>!$('v_'+f).value)}, data));
     if(!j.ok) throw new Error(j.error || '保存できませんでした');
     showResult(j);
   }catch(e){
@@ -284,7 +300,7 @@ function showResult(j){
 }
 
 /* ---------- 起動 ---------- */
-buildTable();
+buildTable(); bindInputs();
 if(getSet('user') && getSet('key')) showMain(); else showSetup();
 </script>
 </body>
