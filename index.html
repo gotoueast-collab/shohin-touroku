@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>音声テスト</title>
+<style>
+  body{font-family:sans-serif;margin:0;padding:16px;background:#f6f7f5;color:#222}
+  h1{font-size:20px;margin:0 0 12px}
+  #q{font-size:26px;font-weight:bold;margin:16px 0 8px;min-height:34px}
+  #heard{font-size:20px;min-height:28px;color:#0a6;background:#fff;border-radius:8px;padding:10px}
+  #status{font-size:14px;color:#666;margin:8px 0}
+  button{font-size:18px;padding:12px 16px;margin:4px 4px 4px 0;border:0;border-radius:8px;background:#2d6a4f;color:#fff}
+  button.sub{background:#888}
+  table{width:100%;border-collapse:collapse;margin-top:16px;background:#fff}
+  td{border-bottom:1px solid #ddd;padding:8px;font-size:16px}
+  td.v{font-weight:bold;text-align:right}
+  .now td{background:#fff3c4}
+  .help{font-size:13px;color:#555;margin-top:14px;line-height:1.6}
+</style>
+</head>
+<body>
+<h1>商品登録 音声テスト</h1>
+<button id="start">▶ スタート</button>
+<button class="sub" id="back">戻る</button>
+<button class="sub" id="skip">飛ばす</button>
+<div id="q"></div>
+<div id="heard"></div>
+<div id="status"></div>
+<table id="tbl"></table>
+<div class="help">
+・質問のあと「12センチです」のように答える（「です」で確定して次へ）<br>
+・「なしです」「飛ばして」→ 空欄で次へ／「戻って」→ 1つ前へ<br>
+・テスト版なので写真・保存はありません
+</div>
+
+<script>
+const ITEMS = [
+  {k:'商品名', q:'商品名は？', text:true},
+  {k:'色', q:'色は？', text:true},
+  {k:'縦・高さ', q:'高さは？', u:'cm'},
+  {k:'横・持ち手有', q:'持ち手ありの横幅は？', u:'cm'},
+  {k:'横・持ち手無', q:'持ち手なしの横幅は？', u:'cm'},
+  {k:'奥行き', q:'奥行きは？', u:'cm'},
+  {k:'重量', q:'重さは？', u:'g'},
+  {k:'容量', q:'容量は？', u:'ml'},
+  {k:'2枚重ね高さ', q:'2枚重ねた高さは？', u:'cm'}
+];
+const vals = {};
+let idx = 0, running = false, rec = null, buf = '', listening = false;
+const $ = id => document.getElementById(id);
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+function render(){
+  $('tbl').innerHTML = ITEMS.map((it,i)=>
+    `<tr class="${i===idx&&running?'now':''}"><td>${it.k}</td><td class="v">${vals[it.k]??''}${vals[it.k]!==undefined&&vals[it.k]!==''&&it.u?' '+it.u:''}</td></tr>`).join('');
+}
+function status(s){ $('status').textContent = s; }
+
+// 漢数字 → 数字（十二、三点五 など簡易対応）
+function kanjiToNum(s){
+  const d={'〇':0,'零':0,'一':1,'二':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9};
+  return s.replace(/[〇零一二三四五六七八九十百千]+(点[〇零一二三四五六七八九]+)?/g, m=>{
+    const [ip, dp] = m.split('点');
+    let total=0, cur=0;
+    for(const c of ip){
+      if(c in d) cur = cur*10 + d[c];
+      else { const u={'十':10,'百':100,'千':1000}[c]; total += (cur||1)*u; cur=0; }
+    }
+    total += cur;
+    return dp ? total + '.' + [...dp].map(c=>d[c]).join('') : String(total);
+  });
+}
+
+function speak(text, then){
+  let done = false;
+  const next = () => { if(!done){ done = true; then(); } };
+  // 読み上げが動かない端末でも先へ進めるよう、一定時間で聞き取りを開始
+  setTimeout(next, 600 + text.length * 250);
+  if(!window.speechSynthesis){ next(); return; }
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'ja-JP';
+  const ja = speechSynthesis.getVoices().find(v => /ja/i.test(v.lang));
+  if(ja) u.voice = ja;
+  u.onend = next;
+  u.onerror = next;
+  speechSynthesis.speak(u);
+}
+
+function ask(){
+  if(idx >= ITEMS.length){ finish(); return; }
+  render();
+  $('q').textContent = ITEMS[idx].q;
+  $('heard').textContent = '';
+  buf = '';
+  stopListen();
+  speak(ITEMS[idx].q, startListen);
+}
+
+function startListen(){
+  if(!running) return;
+  listening = true; status('🎤 聞き取り中…');
+  try { rec.start(); }
+  catch(e){ setTimeout(()=>{ try{ rec.start(); }catch(e2){} }, 400); } // 前回の停止待ち
+}
+function stopListen(){ listening = false; try{ rec.stop(); }catch(e){} }
+
+function handle(text){
+  const t = kanjiToNum(text.normalize('NFKC')).replace(/\s/g,'');
+  if(/戻って|もどって/.test(t)){ idx = Math.max(0, idx-1); ask(); return true; }
+  if(/飛ばして|とばして|スキップ|^なし(です)?$|ありません/.test(t)){ vals[ITEMS[idx].k]=''; idx++; ask(); return true; }
+  if(!/です。?$/.test(t)) return false;           // 「です」が来るまで待つ
+  const body = t.replace(/です。?$/,'');
+  const it = ITEMS[idx];
+  if(it.text){
+    vals[it.k] = body.replace(/^(は|が)/,'');
+  } else {
+    const m = body.match(/\d+(\.\d+)?/);
+    if(!m){ status('数字が聞き取れませんでした。もう一度どうぞ'); buf=''; return true; }
+    vals[it.k] = Number(m[0]);
+  }
+  idx++; ask();
+  return true;
+}
+
+function setupRec(){
+  rec = new SR();
+  rec.lang = 'ja-JP';
+  rec.interimResults = true;
+  rec.continuous = true;
+  rec.onresult = e => {
+    if(!listening) return;               // 読み上げ中・切り替え中の残り結果は無視
+    let interim = '';
+    for(let i=e.resultIndex;i<e.results.length;i++){
+      const r = e.results[i];
+      if(r.isFinal) buf += r[0].transcript; else interim += r[0].transcript;
+    }
+    $('heard').textContent = buf + interim;
+    // 「です」を途中結果でも拾う（端末によって確定が遅いため）
+    if(handle(buf + interim)) return;
+  };
+  rec.onerror = e => status('エラー: ' + e.error);
+  rec.onend = () => { // 端末が勝手に止めたら再開
+    if(running && listening) setTimeout(()=>{ try{ rec.start(); }catch(e){} }, 300);
+  };
+}
+
+function finish(){
+  running = false; stopListen(); render();
+  $('q').textContent = '全部終わりました';
+  status('');
+  speak('入力が終わりました', ()=>{});
+}
+
+$('start').onclick = () => {
+  if(!SR){ status('この端末・ブラウザは音声認識に対応していません'); return; }
+  if(!rec) setupRec();
+  Object.keys(vals).forEach(k=>delete vals[k]);
+  idx = 0; running = true; ask();
+};
+$('back').onclick = () => { if(running){ idx=Math.max(0,idx-1); ask(); } };
+$('skip').onclick = () => { if(running){ vals[ITEMS[idx].k]=''; idx++; ask(); } };
+render();
+</script>
+</body>
+</html>
