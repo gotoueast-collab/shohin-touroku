@@ -250,6 +250,12 @@ function startListen(){
 function stopListen(){ listening = false; try{ rec.stop(); }catch(e){} }
 function stopAll(){ running = false; stopListen(); mark(); $('q').textContent=''; status(''); }
 
+// カタカナで聞き取られたアルファベットを英字に（エーアイ→AI、エックス→X）
+const KANA_ABC = [['ダブリュー','W'],['エイチ','H'],['ジェイ','J'],['キュー','Q'],['エックス','X'],['ゼット','Z'],
+  ['ディー','D'],['ティー','T'],['アール','R'],['エー','A'],['エイ','A'],['ビー','B'],['シー','C'],['イー','E'],
+  ['エフ','F'],['ジー','G'],['アイ','I'],['ケー','K'],['ケイ','K'],['エル','L'],['エム','M'],['エヌ','N'],
+  ['オー','O'],['ピー','P'],['エス','S'],['ユー','U'],['ブイ','V'],['ワイ','Y'],['バツ','X']];
+function kanaToAbc(s){ KANA_ABC.forEach(([k,v])=>{ s = s.split(k).join(v); }); return s; }
 function handle(text){
   // 句点・空白だけ除く（小数点の「.」は残す：2.1 が 21 にならないように）
   const t = text.normalize('NFKC').replace(/[\s。、]/g,'').replace(/\.(?!\d)/g,'');
@@ -266,7 +272,7 @@ function handle(text){
   if(it.text){
     setVal(it.f, body.replace(/^(は|が)/,''));           // 商品名・色は漢数字もそのまま
   } else if(it.code){
-    setVal(it.f, kanjiToNum(body.replace(/^(は|が)/,'')).replace(/(\d)点(\d)/g,'$1.$2').toUpperCase());
+    setVal(it.f, kanaToAbc(kanjiToNum(body.replace(/^(は|が)/,''))).replace(/[^0-9A-Za-z]/g,'').toUpperCase());
   } else {
     const n = kanjiToNum(body).replace(/(\d)点(\d)/g,'$1.$2'); // 「2点1」→2.1
     const m = n.match(/\d+(\.\d+)?/);
