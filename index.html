@@ -270,7 +270,13 @@ function handle(text){
   if(!/です$/.test(t)) return false;
   const body = t.replace(/です$/,''); const it = ITEMS[idx];
   if(it.text){
-    setVal(it.f, body.replace(/^(は|が)/,''));           // 商品名・色は漢数字もそのまま
+    let v = body.replace(/^(は|が)/,'');
+    if(it.f === 'name'){
+      // 「76Xの0029」「941の001の01」のような商品コードは「の」をハイフンにする
+      const c = kanaToAbc(kanjiToNum(v.replace(/(?<![十百千])[〇零一二三四五六七八九]+(?![十百千])/g, m => [...m].map(ch => '〇一二三四五六七八九'.indexOf(ch) >= 0 ? '〇一二三四五六七八九'.indexOf(ch) : 0).join('')))).replace(/ハイフン|マイナス/g,'-');   // 〇〇一 → 001 のように桁を残す
+      if(/^[0-9A-Za-z]+([のノー\-][0-9A-Za-z]+)+$/.test(c)) v = c.replace(/[のノー]/g,'-').toUpperCase();
+    }
+    setVal(it.f, v);           // それ以外の商品名・色は聞き取ったまま
   } else if(it.code){
     setVal(it.f, kanaToAbc(kanjiToNum(body.replace(/^(は|が)/,''))).replace(/[^0-9A-Za-z]/g,'').toUpperCase());
   } else {
