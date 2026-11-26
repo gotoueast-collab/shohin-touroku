@@ -292,7 +292,7 @@ function ask(){
 }
 function startListen(){
   if(!running) return;
-  listening = true; status('🎤 聞き取り中…');
+  listening = true; status('🎤 聞き取り中…'); if(voiceMode === 'measure') sStatus('🎤 聞き取り中…（最後に「です」）');
   try { rec.start(); } catch(e){ setTimeout(()=>{ try{ rec.start(); }catch(e2){} }, 400); }
 }
 function stopListen(){ listening = false; try{ rec.stop(); }catch(e){} }
@@ -347,7 +347,7 @@ function setupRec(){
     $('heard').textContent = buf + interim;
     handle(buf + interim);
   };
-  rec.onerror = e => { if(e.error !== 'no-speech' && e.error !== 'aborted') status('エラー: ' + e.error); };
+  rec.onerror = e => { if(e.error !== 'no-speech' && e.error !== 'aborted'){ status('エラー: ' + e.error); if(voiceMode === 'measure') sStatus('音声のエラー: ' + e.error); } };
   rec.onend = () => { if(running && listening) setTimeout(()=>{ try{ rec.start(); }catch(e){} }, 300); };
 }
 $('start').onclick = () => {
