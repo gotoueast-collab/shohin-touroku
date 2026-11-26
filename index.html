@@ -33,6 +33,13 @@
   .dupitem{font-size:15px;padding:4px 0;border-bottom:1px dashed var(--line)}
   .help{font-size:13px;color:#555;line-height:1.6}
   #setup{display:none}
+  .tabs{display:flex;gap:6px;margin-bottom:8px}
+  .tabs button{flex:1;background:#bbb}
+  .tabs button.on{background:var(--g)}
+  .hit{display:flex;gap:10px;align-items:flex-start}
+  .hit img{width:110px;height:110px;object-fit:contain;background:#fff;border:1px solid var(--line);border-radius:8px}
+  .hit .meta{font-size:15px;line-height:1.6;flex:1}
+  .ok{color:#2d6a4f;font-weight:bold}.ng{color:var(--warn);font-weight:bold}
   #setup input{width:100%;font-size:18px;padding:10px;margin:4px 0 10px;border:1px solid var(--line);border-radius:8px}
 </style>
 </head>
@@ -52,6 +59,8 @@
 <!-- メイン -->
 <div id="main" style="display:none">
   <h1>商品登録 <small id="who"></small></h1>
+  <div class="tabs"><button id="tabReg" class="on">登録</button><button id="tabSearch">画像検索</button></div>
+  <div id="regView">
 
   <div class="card">
     <button class="big" id="photoBtn">📷 写真を撮る</button>
@@ -88,9 +97,34 @@
     ・最後に「保存しますか？」→「はい」で保存<br>
     <a href="#" id="reset">登録者名・合言葉を変更</a>
   </div>
+  </div><!-- /regView -->
+
+  <div id="searchView" style="display:none">
+    <div class="card">
+      <div>仕入先（Xが付くシート）</div>
+      <select id="sTab" style="width:100%;font-size:18px;padding:10px;margin:6px 0"><option value="">読み込み中…</option></select>
+      <button class="big" id="sPhotoBtn">📷 調べたい商品の写真を撮る</button>
+      <input id="sPhoto" type="file" accept="image/*" capture="environment" style="display:none">
+      <img id="sPrev" alt="" style="width:100%;max-height:220px;object-fit:contain;display:none;border-radius:8px;margin-top:8px;background:#eee">
+      <div id="sStatus" class="help" style="margin-top:6px"></div>
+    </div>
+    <div class="card" id="sMeasure" style="display:none">
+      <div><b>測ったサイズ</b>（入れると候補ごとに一致を表示）</div>
+      <table>
+        <tr><td>縦・高さ</td><td style="display:flex;align-items:center"><input id="m_t" inputmode="decimal"><span class="unit">cm</span></td></tr>
+        <tr><td>横・持ち手有</td><td style="display:flex;align-items:center"><input id="m_ya" inputmode="decimal"><span class="unit">cm</span></td></tr>
+        <tr><td>横・持ち手無</td><td style="display:flex;align-items:center"><input id="m_yn" inputmode="decimal"><span class="unit">cm</span></td></tr>
+        <tr><td>奥行き</td><td style="display:flex;align-items:center"><input id="m_ok" inputmode="decimal"><span class="unit">cm</span></td></tr>
+        <tr><td>重量</td><td style="display:flex;align-items:center"><input id="m_w" inputmode="decimal"><span class="unit">g</span></td></tr>
+      </table>
+    </div>
+    <div id="sResults"></div>
+  </div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/mobilenet@2.1.1/dist/mobilenet.min.js"></script>
 <script>
 // ▼ Apps Scriptのウェブアプリ URL（デプロイ後に差し替え）
 const GAS_URL = 'https://script.google.com/macros/s/AKfycbzZYscLmBsvhV-S-5-lYwOhJKv8XHwv1jZkOuDHniVHgvfbULczJT_g0rdBeaGg5TqnAg/exec';
@@ -361,6 +395,111 @@ function showResult(j){
 /* ---------- 起動 ---------- */
 buildTable(); bindInputs();
 if(getSet('user') && getSet('key')) showMain(); else showSetup();
+
+/* ================= 画像検索 ================= */
+$('tabReg').onclick = () => { $('tabReg').classList.add('on'); $('tabSearch').classList.remove('on'); $('regView').style.display='block'; $('searchView').style.display='none'; };
+$('tabSearch').onclick = () => { $('tabSearch').classList.add('on'); $('tabReg').classList.remove('on'); $('regView').style.display='none'; $('searchView').style.display='block'; loadTabs(); };
+let net = null, tabsLoaded = false, feats = [], lastHits = [];
+function sStatus(t){ $('sStatus').textContent = t; }
+async function getNet(){
+  if(net) return net;
+  sStatus('画像を見分ける部品を読み込み中…（初回だけ時間がかかります）');
+  net = await mobilenet.load({version: 2, alpha: 1.0});
+  return net;
+}
+async function loadTabs(){
+  if(tabsLoaded) return;
+  try{
+    const j = await post({action:'tabs', key:getSet('key')});
+    if(!j.ok) throw new Error(j.error);
+    const last = getSet('sTab');
+    $('sTab').innerHTML = '<option value="">選んでください</option>' + j.tabs.map(t => `<option ${t===last?'selected':''}>${t}</option>`).join('');
+    tabsLoaded = true;
+  }catch(e){ sStatus('シート一覧を読めませんでした：' + e.message); }
+}
+$('sTab').onchange = () => { putSet('sTab', $('sTab').value); feats = []; };
+// 画像 → 特徴（1280個の数字を -127〜127 に縮めて文字にする）
+function embed(img){
+  return tf.tidy(() => {
+    const v = net.infer(img, true).flatten();
+    const n = v.div(v.norm());
+    return Array.from(n.dataSync());
+  });
+}
+function packFeat(a){ const m = Math.max(...a.map(Math.abs)) || 1; const b = new Int8Array(a.map(x => Math.round(x / m * 127))); let s=''; b.forEach(x => s += String.fromCharCode(x & 255)); return btoa(s); }
+function unpackFeat(s){ const r = atob(s); const a = new Float32Array(r.length); for(let i=0;i<r.length;i++){ let x = r.charCodeAt(i); if(x>127) x-=256; a[i]=x; } let n=0; a.forEach(x=>n+=x*x); n=Math.sqrt(n)||1; return a.map(x=>x/n); }
+function loadImg(src){ return new Promise((ok, ng) => { const im = new Image(); im.onload = () => ok(im); im.onerror = ng; im.src = src; }); }
+// 中心を正方形に切り抜いて 224px に（撮った写真用）
+function centerCrop(im){
+  const c = document.createElement('canvas'); c.width = c.height = 224;
+  const s = Math.min(im.width, im.height) * 0.85;
+  c.getContext('2d').drawImage(im, (im.width - s)/2, (im.height - s)/2, s, s, 0, 0, 224, 224);
+  return c;
+}
+async function ensureFeats(tab){
+  const j = await post({action:'features', key:getSet('key'), tab});
+  if(!j.ok) throw new Error(j.error);
+  feats = j.rows;
+  const miss = feats.filter(r => !r.feat && r.img);
+  if(!miss.length) return;
+  await getNet();
+  for(let i = 0; i < miss.length; i += 8){
+    sStatus(`登録済み商品の特徴を準備中… ${Math.min(i+8, miss.length)} / ${miss.length}（初回だけ）`);
+    const part = miss.slice(i, i + 8);
+    const g = await post({action:'imgs', key:getSet('key'), ids: part.map(r => r.img)});
+    if(!g.ok) throw new Error(g.error);
+    const save = [];
+    for(const r of part){
+      const b64 = g.data[r.img]; if(!b64) continue;
+      const im = await loadImg('data:image/jpeg;base64,' + b64);
+      r.thumb = 'data:image/jpeg;base64,' + b64;
+      r.feat = packFeat(embed(im));
+      save.push({id: r.id, feat: r.feat});
+    }
+    if(save.length) await post({action:'saveFeat', key:getSet('key'), items: save});
+  }
+}
+$('sPhotoBtn').onclick = () => { if(!$('sTab').value){ sStatus('先に仕入先を選んでください'); return; } $('sPhoto').click(); };
+$('sPhoto').onchange = async () => {
+  const f = $('sPhoto').files[0]; if(!f) return;
+  $('sResults').innerHTML = '';
+  try{
+    const im = await loadImg(URL.createObjectURL(f));
+    $('sPrev').src = im.src; $('sPrev').style.display = 'block';
+    await getNet();
+    if(!feats.length || feats.tab !== $('sTab').value){ await ensureFeats($('sTab').value); feats.tab = $('sTab').value; }
+    sStatus('似ている商品を探しています…');
+    const q = embed(centerCrop(im));
+    const scored = feats.filter(r => r.feat).map(r => { const v = unpackFeat(r.feat); let s = 0; for(let i=0;i<v.length;i++) s += v[i]*q[i]; return Object.assign({score: s}, r); });
+    scored.sort((a, b) => b.score - a.score);
+    lastHits = scored.slice(0, 5);
+    const need = lastHits.filter(r => !r.thumb && r.img).map(r => r.img);
+    if(need.length){ const g = await post({action:'imgs', key:getSet('key'), ids: need}); if(g.ok) lastHits.forEach(r => { if(!r.thumb && g.data[r.img]) r.thumb = 'data:image/jpeg;base64,' + g.data[r.img]; }); }
+    $('sMeasure').style.display = 'block';
+    sStatus(lastHits.length ? '似ている順に表示しています。サイズを測って一致を確認してください' : '登録済みの商品が見つかりません');
+    renderHits();
+  }catch(e){ sStatus('エラー：' + e.message); }
+};
+['m_t','m_ya','m_yn','m_ok','m_w'].forEach(id => $(id).addEventListener('input', renderHits));
+function renderHits(){
+  const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const m = k => { const v = $(k).value.trim(); return v === '' || isNaN(Number(v)) ? null : Number(v); };
+  const mt = m('m_t'), mya = m('m_ya'), mw = m('m_w');
+  const mh = [m('m_yn'), m('m_ok')].filter(x => x !== null).sort((a,b)=>a-b);
+  const mark = (ok) => ok === null ? '' : (ok ? ' <span class="ok">○</span>' : ' <span class="ng">×</span>');
+  const cmp = (a, b) => (a === null || b === '' || b === null || b === undefined) ? null : Math.abs(a - Number(b)) <= 0.5;
+  $('sResults').innerHTML = lastHits.map((r, i) => {
+    const rh = [r.yn, r.ok].filter(x => x !== '' && x !== null).map(Number).sort((a,b)=>a-b);
+    let hOk = null;
+    if(mh.length && rh.length){ hOk = mh.length === rh.length ? mh.every((x,k) => Math.abs(x - rh[k]) <= 0.5) : rh.some(x => Math.abs(x - mh[0]) <= 0.5); }
+    const wOk = (mw === null || r.w === '') ? null : Math.abs(mw - Number(r.w)) <= Math.min(30, Math.max(5, Math.max(mw, Number(r.w)) * 0.1));
+    return `<div class="card"><div class="hit"><img src="${r.thumb || ''}" alt="">
+      <div class="meta"><b>${i+1}. ${esc(r.sku || '（SKU未登録）')}</b>　<small>似ている度 ${Math.round(r.score*100)}</small><br>
+      ${esc(r.label)}　色・柄：${esc(r.color)}<br>
+      高さ ${esc(r.t)}${mark(cmp(mt, r.t))}　横(有) ${esc(r.ya)}${mark(cmp(mya, r.ya))}<br>
+      横(無)・奥 ${esc(r.yn)}×${esc(r.ok)}${mark(hOk)}　重さ ${esc(r.w)}g${mark(wOk)}</div></div></div>`;
+  }).join('');
+}
 </script>
 </body>
 </html>
