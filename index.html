@@ -349,8 +349,11 @@ function setupRec(){
   };
   rec.onerror = e => { if(e.error !== 'no-speech' && e.error !== 'aborted'){ status('エラー: ' + e.error); if(voiceMode === 'measure') sStatus('音声のエラー: ' + e.error); } };
   rec.onend = () => { if(running && listening) setTimeout(()=>{ try{ rec.start(); }catch(e){} }, 300); };
+  rec.onaudiostart = () => { if(voiceMode === 'measure' && !$('mHeard').textContent) $('mHeard').textContent = '（マイクOK・話してください）'; };
+  rec.onspeechstart = () => { if(voiceMode === 'measure') $('mHeard').textContent = '（声が聞こえています…）'; };
 }
 $('start').onclick = () => {
+  if(voiceMode !== 'reg'){ try{ if(rec) rec.abort(); }catch(e){} rec = null; }
   voiceMode = 'reg';
   if(!SR){ status('この端末・ブラウザは音声認識に対応していません（Chrome／Safariで開いてください）'); return; }
   if(!rec) setupRec();
@@ -556,7 +559,10 @@ let midx = 0;
 function askM(){
   if(midx >= MITEMS.length){ stopAll(); $('mQ').textContent = '入力が終わりました'; speak('終わりました', ()=>{}); renderHits(); return; }
   $('mQ').textContent = MITEMS[midx][1]; $('mHeard').textContent = ''; buf = '';
-  stopListen(); speak(MITEMS[midx][1], startListen);
+  listening = false;
+  try{ if(rec) rec.abort(); }catch(e){}
+  rec = null; setupRec();   // iPhone対策：質問ごとに聞き取りを作り直す
+  speak(MITEMS[midx][1], startListen);
 }
 function handleMeasure(text){
   const t = text.normalize('NFKC').replace(/[\s。、]/g,'').replace(/\.(?!\d)/g,'');
@@ -571,7 +577,6 @@ function handleMeasure(text){
 }
 $('mVoice').onclick = () => {
   if(!SR){ sStatus('この端末・ブラウザは音声認識に対応していません'); return; }
-  if(!rec) setupRec();
   voiceMode = 'measure'; running = true;
   midx = MITEMS.findIndex(([id]) => !$(id).value); if(midx < 0) midx = 0;
   askM();
