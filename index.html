@@ -40,6 +40,14 @@
   .hit img{width:110px;height:110px;object-fit:contain;background:#fff;border:1px solid var(--line);border-radius:8px}
   .hit .meta{font-size:15px;line-height:1.6;flex:1}
   .ok{color:#2d6a4f;font-weight:bold}.ng{color:var(--warn);font-weight:bold}
+  .hitcard.strong{background:#111;color:#fff}
+  .hitcard.strong .meta{font-weight:bold}
+  .hitcard.strong .ok{color:#7CFC00;font-size:22px}
+  .hitcard.strong .ng{color:#ff8a80}
+  .hitcard.weak{background:#eee;color:#999}
+  .hitcard.weak img{opacity:.6}
+  .sthumb{position:relative}.sthumb img{width:64px;height:64px;object-fit:cover;border-radius:6px}
+  .sthumb span{position:absolute;top:-6px;right:-6px;background:#c0392b;color:#fff;border-radius:50%;width:20px;height:20px;text-align:center;font-size:13px;line-height:20px}
   #setup input{width:100%;font-size:18px;padding:10px;margin:4px 0 10px;border:1px solid var(--line);border-radius:8px}
 </style>
 </head>
@@ -103,13 +111,16 @@
     <div class="card">
       <div>仕入先（Xが付くシート）</div>
       <select id="sTab" style="width:100%;font-size:18px;padding:10px;margin:6px 0"><option value="">読み込み中…</option></select>
-      <button class="big" id="sPhotoBtn">📷 調べたい商品の写真を撮る</button>
+      <button class="big" id="sPhotoBtn">📷 写真を追加（角度を変えて何枚でも）</button>
       <input id="sPhoto" type="file" accept="image/*" capture="environment" style="display:none">
-      <img id="sPrev" alt="" style="width:100%;max-height:220px;object-fit:contain;display:none;border-radius:8px;margin-top:8px;background:#eee">
+      <div id="sThumbs" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"></div>
       <div id="sStatus" class="help" style="margin-top:6px"></div>
     </div>
-    <div class="card" id="sMeasure" style="display:none">
-      <div><b>測ったサイズ</b>（入れると候補ごとに一致を表示）</div>
+    <div class="card" id="sMeasure">
+      <div style="display:flex;justify-content:space-between;align-items:center"><b>測ったサイズ</b>
+        <button id="mVoice" style="font-size:15px;padding:8px 12px">🎤 音声で入力</button></div>
+      <div id="mQ" style="font-size:20px;font-weight:bold;min-height:24px"></div>
+      <div id="mHeard" style="color:#0a6;min-height:20px"></div>
       <table>
         <tr><td>縦・高さ</td><td style="display:flex;align-items:center"><input id="m_t" inputmode="decimal"><span class="unit">cm</span></td></tr>
         <tr><td>横・持ち手有</td><td style="display:flex;align-items:center"><input id="m_ya" inputmode="decimal"><span class="unit">cm</span></td></tr>
@@ -117,7 +128,9 @@
         <tr><td>奥行き</td><td style="display:flex;align-items:center"><input id="m_ok" inputmode="decimal"><span class="unit">cm</span></td></tr>
         <tr><td>重量</td><td style="display:flex;align-items:center"><input id="m_w" inputmode="decimal"><span class="unit">g</span></td></tr>
       </table>
+      <div class="help">サイズを入れると、画像で似ていなくてもサイズが合う商品が上に出ます</div>
     </div>
+    <button class="big sub" id="sClear">✖ クリア（次の商品へ）</button>
     <div id="sResults"></div>
   </div>
 </div>
@@ -145,6 +158,7 @@ const CONFIRM = ITEMS.length; // 最後の「保存しますか？」
 const $ = id => document.getElementById(id);
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 let idx = 0, running = false, rec = null, buf = '', listening = false;
+let voiceMode = 'reg';   // reg＝登録 / measure＝画像検索のサイズ入力
 let photoData = '';   // base64（縮小済みJPEG）
 let qrImage = '', qrText = '';
 let smallData = '';  // 白抜き用の小さい写真（約500px）   // QRの切り抜き（base64）と読み取り内容
@@ -329,6 +343,7 @@ function setupRec(){
     for(let i=e.resultIndex;i<e.results.length;i++){
       const r = e.results[i]; if(r.isFinal) buf += r[0].transcript; else interim += r[0].transcript;
     }
+    if(voiceMode === 'measure'){ $('mHeard').textContent = buf + interim; handleMeasure(buf + interim); return; }
     $('heard').textContent = buf + interim;
     handle(buf + interim);
   };
@@ -336,6 +351,7 @@ function setupRec(){
   rec.onend = () => { if(running && listening) setTimeout(()=>{ try{ rec.start(); }catch(e){} }, 300); };
 }
 $('start').onclick = () => {
+  voiceMode = 'reg';
   if(!SR){ status('この端末・ブラウザは音声認識に対応していません（Chrome／Safariで開いてください）'); return; }
   if(!rec) setupRec();
   // 空欄の最初の項目から始める
@@ -397,9 +413,9 @@ buildTable(); bindInputs();
 if(getSet('user') && getSet('key')) showMain(); else showSetup();
 
 /* ================= 画像検索 ================= */
-$('tabReg').onclick = () => { $('tabReg').classList.add('on'); $('tabSearch').classList.remove('on'); $('regView').style.display='block'; $('searchView').style.display='none'; };
-$('tabSearch').onclick = () => { $('tabSearch').classList.add('on'); $('tabReg').classList.remove('on'); $('regView').style.display='none'; $('searchView').style.display='block'; loadTabs(); };
-let net = null, tabsLoaded = false, feats = [], lastHits = [];
+$('tabReg').onclick = () => { $('tabReg').classList.add('on'); $('tabSearch').classList.remove('on'); $('regView').style.display='block'; $('searchView').style.display='none'; stopAll(); };
+$('tabSearch').onclick = () => { $('tabSearch').classList.add('on'); $('tabReg').classList.remove('on'); $('regView').style.display='none'; $('searchView').style.display='block'; stopAll(); loadTabs(); };
+let net = null, tabsLoaded = false, feats = [], featsTab = '', qVecs = [], qThumbs = [], scoredAll = [];
 function sStatus(t){ $('sStatus').textContent = t; }
 async function getNet(){
   if(net) return net;
@@ -417,29 +433,27 @@ async function loadTabs(){
     tabsLoaded = true;
   }catch(e){ sStatus('シート一覧を読めませんでした：' + e.message); }
 }
-$('sTab').onchange = () => { putSet('sTab', $('sTab').value); feats = []; };
-// 画像 → 特徴（1280個の数字を -127〜127 に縮めて文字にする）
+$('sTab').onchange = () => { putSet('sTab', $('sTab').value); feats = []; featsTab = ''; rescore(); };
 function embed(img){
-  return tf.tidy(() => {
-    const v = net.infer(img, true).flatten();
-    const n = v.div(v.norm());
-    return Array.from(n.dataSync());
-  });
+  return tf.tidy(() => { const v = net.infer(img, true).flatten(); return Array.from(v.div(v.norm()).dataSync()); });
 }
 function packFeat(a){ const m = Math.max(...a.map(Math.abs)) || 1; const b = new Int8Array(a.map(x => Math.round(x / m * 127))); let s=''; b.forEach(x => s += String.fromCharCode(x & 255)); return btoa(s); }
 function unpackFeat(s){ const r = atob(s); const a = new Float32Array(r.length); for(let i=0;i<r.length;i++){ let x = r.charCodeAt(i); if(x>127) x-=256; a[i]=x; } let n=0; a.forEach(x=>n+=x*x); n=Math.sqrt(n)||1; return a.map(x=>x/n); }
 function loadImg(src){ return new Promise((ok, ng) => { const im = new Image(); im.onload = () => ok(im); im.onerror = ng; im.src = src; }); }
-// 中心を正方形に切り抜いて 224px に（撮った写真用）
-function centerCrop(im){
+// 撮った写真は、切り抜き方を3通り（全体・中央85%・中央60%）にして特徴を作る
+function crop(im, rate){
   const c = document.createElement('canvas'); c.width = c.height = 224;
-  const s = Math.min(im.width, im.height) * 0.85;
-  c.getContext('2d').drawImage(im, (im.width - s)/2, (im.height - s)/2, s, s, 0, 0, 224, 224);
+  const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, 224, 224);
+  if(rate >= 1){ const k = 224 / Math.max(im.width, im.height); const w = im.width*k, h = im.height*k; g.drawImage(im, (224-w)/2, (224-h)/2, w, h); }
+  else { const s = Math.min(im.width, im.height) * rate; g.drawImage(im, (im.width - s)/2, (im.height - s)/2, s, s, 0, 0, 224, 224); }
   return c;
 }
 async function ensureFeats(tab){
+  if(featsTab === tab && feats.length) return;
   const j = await post({action:'features', key:getSet('key'), tab});
   if(!j.ok) throw new Error(j.error);
-  feats = j.rows;
+  feats = j.rows; featsTab = tab;
+  feats.forEach(r => { if(r.feat) r.vec = unpackFeat(r.feat); });
   const miss = feats.filter(r => !r.feat && r.img);
   if(!miss.length) return;
   await getNet();
@@ -453,7 +467,7 @@ async function ensureFeats(tab){
       const b64 = g.data[r.img]; if(!b64) continue;
       const im = await loadImg('data:image/jpeg;base64,' + b64);
       r.thumb = 'data:image/jpeg;base64,' + b64;
-      r.feat = packFeat(embed(im));
+      const v = embed(im); r.feat = packFeat(v); r.vec = unpackFeat(r.feat);
       save.push({id: r.id, feat: r.feat});
     }
     if(save.length) await post({action:'saveFeat', key:getSet('key'), items: save});
@@ -462,44 +476,106 @@ async function ensureFeats(tab){
 $('sPhotoBtn').onclick = () => { if(!$('sTab').value){ sStatus('先に仕入先を選んでください'); return; } $('sPhoto').click(); };
 $('sPhoto').onchange = async () => {
   const f = $('sPhoto').files[0]; if(!f) return;
-  $('sResults').innerHTML = '';
+  $('sPhoto').value = '';
   try{
     const im = await loadImg(URL.createObjectURL(f));
-    $('sPrev').src = im.src; $('sPrev').style.display = 'block';
     await getNet();
-    if(!feats.length || feats.tab !== $('sTab').value){ await ensureFeats($('sTab').value); feats.tab = $('sTab').value; }
+    await ensureFeats($('sTab').value);
     sStatus('似ている商品を探しています…');
-    const q = embed(centerCrop(im));
-    const scored = feats.filter(r => r.feat).map(r => { const v = unpackFeat(r.feat); let s = 0; for(let i=0;i<v.length;i++) s += v[i]*q[i]; return Object.assign({score: s}, r); });
-    scored.sort((a, b) => b.score - a.score);
-    lastHits = scored.slice(0, 5);
-    const need = lastHits.filter(r => !r.thumb && r.img).map(r => r.img);
-    if(need.length){ const g = await post({action:'imgs', key:getSet('key'), ids: need}); if(g.ok) lastHits.forEach(r => { if(!r.thumb && g.data[r.img]) r.thumb = 'data:image/jpeg;base64,' + g.data[r.img]; }); }
-    $('sMeasure').style.display = 'block';
-    sStatus(lastHits.length ? '似ている順に表示しています。サイズを測って一致を確認してください' : '登録済みの商品が見つかりません');
-    renderHits();
+    qVecs.push([1, 0.85, 0.6].map(r => embed(crop(im, r))));
+    qThumbs.push(im.src);
+    drawThumbs();
+    rescore();
+    sStatus(`写真${qThumbs.length}枚で検索中。角度を変えて追加すると当たりやすくなります`);
   }catch(e){ sStatus('エラー：' + e.message); }
 };
-['m_t','m_ya','m_yn','m_ok','m_w'].forEach(id => $(id).addEventListener('input', renderHits));
-function renderHits(){
+function drawThumbs(){
+  $('sThumbs').innerHTML = qThumbs.map((src, i) => `<div class="sthumb"><img src="${src}"><span data-i="${i}">×</span></div>`).join('');
+  $('sThumbs').querySelectorAll('span').forEach(b => b.onclick = () => { const i = Number(b.dataset.i); qThumbs.splice(i, 1); qVecs.splice(i, 1); drawThumbs(); rescore(); });
+}
+// 似ている度：写真ごと・切り抜きごとに比べて一番似ている値（写真を増やすほど当たりやすい）
+function rescore(){
+  scoredAll = feats.map(r => {
+    let best = 0;
+    if(r.vec) qVecs.forEach(set => set.forEach(q => { let s = 0; for(let i=0;i<q.length;i++) s += r.vec[i]*q[i]; if(s > best) best = s; }));
+    return Object.assign(r, {score: best});
+  });
+  renderHits();
+}
+['m_t','m_ya','m_yn','m_ok','m_w'].forEach(id => $(id).addEventListener('input', async () => {
+  // 写真なしでサイズだけ入れた場合も、その仕入先の商品から探す
+  if($('sTab').value && featsTab !== $('sTab').value){ try{ await getNet(); await ensureFeats($('sTab').value); }catch(e){ sStatus('エラー：' + e.message); return; } }
+  rescore();
+}));
+function measured(){ const m = k => { const v = $(k).value.trim(); return v === '' || isNaN(Number(v)) ? null : Number(v); };
+  return { t: m('m_t'), ya: m('m_ya'), w: m('m_w'), h: [m('m_yn'), m('m_ok')].filter(x => x !== null).sort((a,b)=>a-b) }; }
+function judge(r, M){
+  const num = v => (v === '' || v === null || v === undefined || isNaN(Number(v))) ? null : Number(v);
+  const near = (a, b) => (a === null || b === null) ? null : Math.abs(a - b) <= 0.5;
+  const rh = [num(r.yn), num(r.ok)].filter(x => x !== null).sort((a,b)=>a-b);
+  let h = null;
+  if(M.h.length && rh.length) h = M.h.length === rh.length ? M.h.every((x,k) => Math.abs(x - rh[k]) <= 0.5) : rh.some(x => Math.abs(x - M.h[0]) <= 0.5);
+  const rw = num(r.w);
+  const w = (M.w === null || rw === null) ? null : Math.abs(M.w - rw) <= Math.min(30, Math.max(5, Math.max(M.w, rw) * 0.1));
+  const res = { t: near(M.t, num(r.t)), ya: near(M.ya, num(r.ya)), h, w };
+  res.ok = Object.values(res).filter(x => x === true).length;
+  res.ng = Object.values(res).filter(x => x === false).length;
+  return res;
+}
+async function renderHits(){
+  const M = measured();
+  const hasM = M.t !== null || M.ya !== null || M.w !== null || M.h.length;
+  if(!qVecs.length && !hasM){ $('sResults').innerHTML = ''; return; }
+  const list = scoredAll.map(r => Object.assign(r, {j: judge(r, M)}))
+    .filter(r => qVecs.length || r.j.ok > 0)
+    .sort((a, b) => hasM ? (b.j.ok - b.j.ng*0.5) - (a.j.ok - a.j.ng*0.5) || b.score - a.score : b.score - a.score)
+    .slice(0, 8);
+  const need = list.filter(r => !r.thumb && r.img).map(r => r.img);
+  if(need.length){ try{ const g = await post({action:'imgs', key:getSet('key'), ids: need.slice(0, 10)}); if(g.ok) list.forEach(r => { if(!r.thumb && g.data[r.img]) r.thumb = 'data:image/jpeg;base64,' + g.data[r.img]; }); }catch(e){} }
   const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-  const m = k => { const v = $(k).value.trim(); return v === '' || isNaN(Number(v)) ? null : Number(v); };
-  const mt = m('m_t'), mya = m('m_ya'), mw = m('m_w');
-  const mh = [m('m_yn'), m('m_ok')].filter(x => x !== null).sort((a,b)=>a-b);
-  const mark = (ok) => ok === null ? '' : (ok ? ' <span class="ok">○</span>' : ' <span class="ng">×</span>');
-  const cmp = (a, b) => (a === null || b === '' || b === null || b === undefined) ? null : Math.abs(a - Number(b)) <= 0.5;
-  $('sResults').innerHTML = lastHits.map((r, i) => {
-    const rh = [r.yn, r.ok].filter(x => x !== '' && x !== null).map(Number).sort((a,b)=>a-b);
-    let hOk = null;
-    if(mh.length && rh.length){ hOk = mh.length === rh.length ? mh.every((x,k) => Math.abs(x - rh[k]) <= 0.5) : rh.some(x => Math.abs(x - mh[0]) <= 0.5); }
-    const wOk = (mw === null || r.w === '') ? null : Math.abs(mw - Number(r.w)) <= Math.min(30, Math.max(5, Math.max(mw, Number(r.w)) * 0.1));
-    return `<div class="card"><div class="hit"><img src="${r.thumb || ''}" alt="">
-      <div class="meta"><b>${i+1}. ${esc(r.sku || '（SKU未登録）')}</b>　<small>似ている度 ${Math.round(r.score*100)}</small><br>
-      ${esc(r.label)}　色・柄：${esc(r.color)}<br>
-      高さ ${esc(r.t)}${mark(cmp(mt, r.t))}　横(有) ${esc(r.ya)}${mark(cmp(mya, r.ya))}<br>
-      横(無)・奥 ${esc(r.yn)}×${esc(r.ok)}${mark(hOk)}　重さ ${esc(r.w)}g${mark(wOk)}</div></div></div>`;
+  const mk = v => v === null ? '' : (v ? ' <span class="ok">◎</span>' : ' <span class="ng">×</span>');
+  $('sResults').innerHTML = list.map((r, i) => {
+    const cls = !hasM ? '' : (r.j.ok >= 2 ? 'strong' : 'weak');
+    const title = r.sku ? esc(r.sku) : esc(r.label) + '（SKU未登録）';
+    return `<div class="card hitcard ${cls}"><div class="hit"><img src="${r.thumb || ''}" alt="">
+      <div class="meta"><b style="font-size:17px">${i+1}. ${title}</b>　<small>似ている度 ${Math.round(r.score*100)}</small><br>
+      ${r.sku ? esc(r.label) + '　' : ''}色・柄：${esc(r.color)}<br>
+      高さ ${esc(r.t)}${mk(r.j.t)}　横(有) ${esc(r.ya)}${mk(r.j.ya)}<br>
+      横(無)・奥 ${esc(r.yn)}×${esc(r.ok)}${mk(r.j.h)}　重さ ${esc(r.w)}g${mk(r.j.w)}</div></div></div>`;
   }).join('');
 }
+$('sClear').onclick = () => {
+  qVecs = []; qThumbs = []; drawThumbs();
+  ['m_t','m_ya','m_yn','m_ok','m_w'].forEach(id => $(id).value = '');
+  $('mQ').textContent = ''; $('mHeard').textContent = ''; stopAll();
+  $('sResults').innerHTML = ''; sStatus('クリアしました'); window.scrollTo(0, 0);
+};
+/* --- サイズの音声入力 --- */
+const MITEMS = [['m_t','高さは？'],['m_ya','持ち手ありの横幅は？'],['m_yn','持ち手なしの横幅は？'],['m_ok','奥行きは？'],['m_w','重さは？']];
+let midx = 0;
+function askM(){
+  if(midx >= MITEMS.length){ stopAll(); $('mQ').textContent = '入力が終わりました'; speak('終わりました', ()=>{}); renderHits(); return; }
+  $('mQ').textContent = MITEMS[midx][1]; $('mHeard').textContent = ''; buf = '';
+  stopListen(); speak(MITEMS[midx][1], startListen);
+}
+function handleMeasure(text){
+  const t = text.normalize('NFKC').replace(/[\s。、]/g,'').replace(/\.(?!\d)/g,'');
+  if(/戻って|もどって/.test(t)){ midx = Math.max(0, midx-1); askM(); return; }
+  if(/^(飛ばす|飛ばして|とばす|とばして|スキップ|なし|無し|まだ)(です)?$/.test(t)){ midx++; askM(); return; }
+  if(/^(終わり|おわり|終了)(です)?$/.test(t)){ midx = MITEMS.length; askM(); return; }
+  if(!/です$/.test(t)) return;
+  const n = kanjiToNum(t.replace(/です$/,'')).replace(/(\d)点(\d)/g,'$1.$2').match(/\d+(\.\d+)?/);
+  if(!n){ $('mHeard').textContent = '数字が聞き取れませんでした。もう一度どうぞ'; buf=''; return; }
+  $(MITEMS[midx][0]).value = n[0]; $(MITEMS[midx][0]).dispatchEvent(new Event('input'));
+  midx++; askM();
+}
+$('mVoice').onclick = () => {
+  if(!SR){ sStatus('この端末・ブラウザは音声認識に対応していません'); return; }
+  if(!rec) setupRec();
+  voiceMode = 'measure'; running = true;
+  midx = MITEMS.findIndex(([id]) => !$(id).value); if(midx < 0) midx = 0;
+  askM();
+};
 </script>
 </body>
 </html>
